@@ -5,6 +5,7 @@ import pandas as pd
 from scipy.constants import c
 from random import shuffle
 
+
 class SignalInformation(object):
     def __init__(self, power, path):
         self._signal_power = power
