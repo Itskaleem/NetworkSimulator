@@ -1,13 +1,14 @@
-from random import shuffle
-import itertools as it
-from scipy.constants import Planck, c, pi
-import matplotlib.pyplot as plt
-import pandas as pd
+from scipy.constants import Planck
+from scipy.constants import pi
+from scipy.constants import c
 from scipy.special import erfcinv
-import json
 import numpy as np
-
-
+import pandas as pd
+import json
+from random import shuffle
+import matplotlib.pyplot as plt
+import itertools as it
+import copy
 
 class Lightpath(object):
     def __init__(self, path: str, channel=0, rs=32e9, df=50e9, transceiver ='shannon'):
@@ -168,100 +169,6 @@ class Node(object):
         return lightpath
 
 
-class Connection(object):
-    def __init__(self, input_node, output_node, rate_request =0):
-        self._input_node = input_node
-        self._output_node = output_node
-        self._signal_power = None
-        self._latency = 0
-        self._snr = []
-        self._rate_request = float(rate_request)
-        self._residual_rate_request = float(rate_request)
-        self._lightpaths = []
-        self._bitrate = None # removed in the code
-
-    @property
-    def input_node(self):
-        return self._input_node
-
-    @property
-    def rate_request(self):
-        return self._rate_request
-    @property
-    def residual_rate_request(self):
-        return self._residual_rate_request
-    @property
-    def bitrate(self):
-        return self._bitrate
-
-    @bitrate.setter
-    def bitrate(self, bitrate):
-        self._bitrate = bitrate
-
-    def calculate_capacity(self):
-        self.bitrate = sum([lightpath.bitrate for lightpath in self.lightpaths])
-        return self.bitrate
-
-    def set_connection(self, lightpath):
-        self.signal_power = lightpath.signal_power
-        self.latency = max(self.latency, lightpath.latency)
-        self.snr = 10 * np.log10(lightpath.snr)
-        self.lightpaths = lightpath
-        self._residual_rate_request = self._residual_rate_request - lightpath.bitrate
-        return self
-
-    def block_connection(self):
-        self.latency = None
-        self.snr = 0
-        self.bitrate = 0
-        self.clear_lightpaths()
-        return self
-
-
-    @property
-    def output_node(self):
-        return self._output_node
-
-    @property
-    def signal_power(self):
-        return self._signal_power
-
-    @property
-    def latency(self):
-        return self._latency
-
-    @latency.setter
-    def latency(self, latency):
-        self._latency = latency
-
-    @signal_power.setter
-    def signal_power(self, signal_power):
-        self._signal_power = signal_power
-
-    @property
-    def snr(self):
-        return self._snr
-
-    @snr.setter
-    def snr(self, snr):
-        self._snr = snr
-
-    @property
-    def lightpaths(self):
-        return self._lightpaths
-
-    @lightpaths.setter
-    def lightpaths(self, lightpath):
-        self._lightpaths.append(lightpath)
-
-    @snr.setter
-    def snr(self, snr):
-        self._snr.append(snr)
-
-    def clear_lightpaths(self):
-        self._lightpaths = []
-
-
 class Line(object):
     def __init__(self, line_dict):
         self._label = line_dict['label']
@@ -269,12 +176,13 @@ class Line(object):
         self._amplifiers = int(np.ceil(self._length / 80e3))
         self._span_length = self._length / self._amplifiers
         # Set Gain to transparency
-        self._noise_figure = 7 # increased noise figure to see more results such as different rates for the lightpaths bcz the rate is lower
+        self._noise_figure = 7
         # Physical Parameters of the Fiber
         self._alpha = 4.6e-5
         self._beta = 21.27e-27
         self._gamma = 1.27e-3
-        self._state = ['free'] * 10
+        self._Nch = line_dict['Nch']
+        self._state = ['free'] * self._Nch
         self._successive = {}
         self._gain = self.transparency()
 
@@ -301,14 +209,20 @@ class Line(object):
     @property
     def gain(self):
         return self._gain
-
+    @property
+    def Nch(self):
+        return self._Nch
     @gain.setter
     def gain(self, gain):
         self._gain = gain
 
+
     @property
     def noise_figure(self):
         return self._noise_figure
+    @noise_figure.setter
+    def noise_figure(self, noise_figure):
+        self._noise_figure = noise_figure
 
     @property
     def alpha(self):
@@ -362,17 +276,12 @@ class Line(object):
         ase_noise = N * h * f * Bn * noise_figure_lin * (gain_lin - 1)
         return ase_noise
 
-    def nli_generation(self, signal_power, Rs, df):
-        Nch = 10
+    def nli_generation(self, signal_power, Rs, df,Bn = 12.5e9):
         Pch = signal_power
-        Bn = 12.5e9
         loss = np.exp(- self.alpha * self.span_length)  # modified this line
         gain_lin = 10 ** (self.gain / 10)
         N_spans = self.amplifiers
-        eta = 16 / (27 * pi) * \
-              np.log(pi ** 2 * self.beta * Rs ** 2 * \
-                     Nch ** (2 * Rs / df) / (2 * self.alpha)) * \
-              self.gamma ** 2 / (4 * self.alpha * self.beta * Rs ** 3)
+        eta = 16 / (27 * pi) *self.gamma ** 2 / (4 * self.alpha * self.beta * Rs ** 3) * np.log(pi ** 2 * self.beta * Rs ** 2 * self.Nch **(2 * Rs / df) / (2 * self . alpha ))
         nli_noise = N_spans * (Pch ** 3 * loss * gain_lin * eta * Bn)
         return nli_noise
 
@@ -398,16 +307,16 @@ class Line(object):
         return lightpath
 
 
-
-
 class Network(object):
-    def __init__(self, json_path):
+    def __init__(self, json_path, nch=10, upgrade_line =''):
         node_json = json.load(open(json_path, 'r'))
         self._nodes = {}
         self._lines = {}
         self._connected = False
         self._weighted_paths = None
         self._route_space = None
+        self._Nch = nch
+        self._upgrade_line = upgrade_line
         for node_label in node_json:
             # Create the node instance
             node_dict = node_json[node_label]
@@ -423,9 +332,15 @@ class Network(object):
                 node_position = np.array(node_json[node_label]['position'])
                 connected_node_position = np.array(node_json[connected_node_label]['position'])
                 line_dict['length'] = np.sqrt(np.sum((node_position - connected_node_position) ** 2))
-
+                line_dict['Nch'] = self.Nch
                 line = Line(line_dict)
                 self._lines[line_label] = line
+        if not upgrade_line == '':
+            self.lines[self._upgrade_line].noise_figure = self.lines[upgrade_line].noise_figure - 3
+
+    @property
+    def Nch(self):
+        return self._Nch
 
     @property
     def nodes(self):
@@ -503,12 +418,11 @@ class Network(object):
     def optimization(self, lightpath):
         # sets the lightpath power to the optimal \
         # power calculated at each line ( node beginning the line)
-        path = lightpath . path
-        start_node = self . nodes[path[0]]
-        optimized_lightpath = start_node . optimize(lightpath)
-        optimized_lightpath . path = path
+        path = lightpath.path
+        start_node = self.nodes[path[0]]
+        optimized_lightpath = start_node.optimize(lightpath)
+        optimized_lightpath.path = path
         return optimized_lightpath
-
 
     def set_weighted_paths(self):  # in the pdf he removed the signal power
         if not self.connected:
@@ -534,7 +448,7 @@ class Network(object):
                 paths.append(path_string[:-2])
 
                 # Propagation
-                lightpath = Lightpath(path) # need to pass more
+                lightpath = Lightpath(path)  # need to pass more
                 lightpath = self.optimization(lightpath)
                 lightpath = self.propagate(lightpath, occupation=False)
 
@@ -551,7 +465,7 @@ class Network(object):
 
         route_space = pd.DataFrame()
         route_space['path'] = paths
-        for i in range(10):
+        for i in range(self.Nch):
             route_space[str(i)] = ['free'] * len(paths)
         self._route_space = route_space
 
@@ -588,7 +502,7 @@ class Network(object):
             best_path = None
         return best_path
 
-    def stream(self, connections, best='latency',  transceiver ='shannon'):
+    def stream(self, connections, best='latency', transceiver='shannon'):
         streamed_connections = []
         for connection in connections:
             input_node = connection.input_node
@@ -603,33 +517,32 @@ class Network(object):
                 continue
             if path:
                 path_occupancy = self.route_space.loc[self.route_space.path == path].T.values[1:]
-                channel = [i for i in range(len(path_occupancy)) if path_occupancy[i] == 'free'][0]  # prende il primo canale libero
+                channel = [i for i in range(len(path_occupancy)) if path_occupancy[i] == 'free'][0]  # take the first available channel
                 path = path.replace('->', '')
-                in_lightpath = Lightpath (path , channel , transceiver = transceiver )
-                in_lightpath = self . optimization ( in_lightpath )
-                out_lightpath = self . propagate ( in_lightpath , occupation = True )
+                in_lightpath = Lightpath(path, channel, transceiver=transceiver)
+                in_lightpath = self.optimization(in_lightpath)
+                out_lightpath = self.propagate(in_lightpath, occupation=True)
                 self.calculate_bitrate(out_lightpath)
                 if out_lightpath.bitrate == 0.0:
-                    #[self.update_route_space(lp.path, lp.channel,'free') for lp in connection.lightpaths]
+                    [self.update_route_space(lp.path, lp.channel,'free') for lp in connection.lightpaths] # set everything we tried to occupy in the path if we fail to get the whole requested rate
                     connection.block_connection()
                 else:
                     connection.set_connection(out_lightpath)
-                    self.update_route_space(path, out_lightpath.channel,'occupied') #here
+                    self.update_route_space(path, out_lightpath.channel, 'occupied')  # here
                     if connection.residual_rate_request > 0:
-                        self.stream([connection], best, transceiver) #removed type
+                        self.stream([connection], best, transceiver)  # removed type
             else:
-                #[self.update_route_space(lp.path, lp.channel, 'free') for lp in connection.lightpaths]
+                #[self.update_route_space(lp.path, lp.channel, 'free') for lp in connection.lightpaths] # in case we dont have a path
                 connection.block_connection()
             streamed_connections.append(connection)
         return streamed_connections
-
 
     @staticmethod
     def path_to_line_set(path):
         path = path.replace('->', '')
         return set([path[i] + path[i + 1] for i in range(len(path) - 1)])
 
-    def update_route_space(self, path, channel,state):
+    def update_route_space(self, path, channel, state):
         all_paths = [self.path_to_line_set(p) for p in self.route_space.path.values]
         states = self.route_space[str(channel)]
         lines = self.path_to_line_set(path)
@@ -644,30 +557,121 @@ class Network(object):
         Bn = 12.5e9
         Rs = lightpath.rs
         if lightpath.transceiver.lower() == 'fixed-rate':
-           snrt = 2 * erfcinv(2 * bert) * (Rs / Bn)
-           rb = np.piecewise(snr, [snr < snrt, snr >= snrt], [0, 100])
+            snrt = 2 * erfcinv(2 * bert) * (Rs / Bn)
+            rb = np.piecewise(snr, [snr < snrt, snr >= snrt], [0, 100])
         elif lightpath.transceiver.lower() == 'flex-rate':
-           snrt1 = 2 * erfcinv(2 * bert) ** 2 * (Rs / Bn)
-           snrt2 = (14 / 3) * erfcinv(3 / 2 * bert) ** 2 * (Rs / Bn)
-           snrt3 = 10 * erfcinv(8 / 3 * bert) ** 2 * (Rs / Bn)
-           cond1 = (snr < snrt1)
-           cond2 = (snr >= snrt1 and snr < snrt2)
-           cond3 = (snr >= snrt2 and snr < snrt3)
-           cond4 = (snr >= snrt3)
-           rb = np.piecewise(snr, \
-                      [cond1, cond2, cond3, cond4], [0, 100, 200, 400])
-        elif lightpath.transceiver.lower() =='shannon':
-             rb = 2 * Rs * np.log2(1 + snr * (Rs / Bn)) * 1e-9
+            snrt1 = 2 * erfcinv(2 * bert) ** 2 * (Rs / Bn)
+            snrt2 = (14 / 3) * erfcinv(3 / 2 * bert) ** 2 * (Rs / Bn)
+            snrt3 = 10 * erfcinv(8 / 3 * bert) ** 2 * (Rs / Bn)
+            cond1 = (snr < snrt1)
+            cond2 = (snr >= snrt1 and snr < snrt2)
+            cond3 = (snr >= snrt2 and snr < snrt3)
+            cond4 = (snr >= snrt3)
+            rb = np.piecewise(snr, \
+                              [cond1, cond2, cond3, cond4], [0, 100, 200, 400])
+        elif lightpath.transceiver.lower() == 'shannon':
+            rb = 2 * Rs * np.log2(1 + snr * (Rs / Bn)) * 1e-9
         lightpath.bitrate = float(rb)  # set bitrate in lightpath
         return float(rb)
 
 
+class Connection(object):
+    def __init__(self, input_node, output_node, rate_request =0):
+        self._input_node = input_node
+        self._output_node = output_node
+        self._signal_power = None
+        self._latency = 0
+        self._snr = []
+        self._rate_request = float(rate_request)
+        self._residual_rate_request = float(rate_request)
+        self._lightpaths = []
+        self._bitrate = None # removed in the code
+
+    @property
+    def input_node(self):
+        return self._input_node
+
+    @property
+    def rate_request(self):
+        return self._rate_request
+    @property
+    def residual_rate_request(self):
+        return self._residual_rate_request
+    @property
+    def bitrate(self):
+        return self._bitrate
+
+    @bitrate.setter
+    def bitrate(self, bitrate):
+        self._bitrate = bitrate
+
+    def calculate_capacity(self):
+        self.bitrate = sum([lightpath.bitrate for lightpath in self.lightpaths])
+        return self.bitrate
+
+    def set_connection(self, lightpath):
+        self.signal_power = lightpath.signal_power
+        self.latency = max(self.latency, lightpath.latency)
+        self.snr = 10 * np.log10(lightpath.snr)
+        self.lightpaths = lightpath
+        self._residual_rate_request = self._residual_rate_request - lightpath.bitrate
+        return self
+
+    def block_connection(self):
+        self.latency = None
+        self.snr = 0
+        self.bitrate = 0
+        self.clear_lightpaths()
+        return self
 
 
+    @property
+    def output_node(self):
+        return self._output_node
 
-def create_traffic_matrix(nodes, rate):
+    @property
+    def signal_power(self):
+        return self._signal_power
+
+    @property
+    def latency(self):
+        return self._latency
+
+    @latency.setter
+    def latency(self, latency):
+        self._latency = latency
+
+    @signal_power.setter
+    def signal_power(self, signal_power):
+        self._signal_power = signal_power
+
+    @property
+    def snr(self):
+        return self._snr
+
+    #@snr.setter
+    #def snr(self, snr):
+        #self._snr = snr
+
+    @property
+    def lightpaths(self):
+        return self._lightpaths
+
+    @lightpaths.setter
+    def lightpaths(self, lightpath):
+        self._lightpaths.append(lightpath)
+
+    @snr.setter
+    def snr(self, snr):
+        self._snr.append(snr)
+
+    def clear_lightpaths(self):
+        self._lightpaths = []
+
+
+def create_traffic_matrix(nodes, rate, multiplier=1):
     s = pd.Series(data=[0.0] * len(nodes), index=nodes)
-    df = pd.DataFrame(float(rate), index=s.index, columns=s.index, dtype=s.dtype)
+    df = pd.DataFrame(float(rate * multiplier), index=s.index, columns=s.index, dtype=s.dtype)
     np.fill_diagonal(df.values, s)
     return df
 
@@ -684,48 +688,84 @@ def plot3Dbars(t):
 
 
 def main():
-    network = Network('nodes_2.json')  # creates nodes and line objects
-    network.connect()  # connects the net by setting the line successive attribute with the node object at the end of the line
-    network.draw()
-    node_labels = list(network.nodes.keys())
-    T = create_traffic_matrix(node_labels, 3000) # 200 connection reqs
-    t = T.values
-    connections = []
-    node_pairs = list(filter(lambda x: x[0] != x[1], list(it.product(node_labels, node_labels))))
-    shuffle(node_pairs)
-    for node_pair in node_pairs:
-        connection = Connection(node_pair[0], node_pair[-1], float(T.loc[node_pair[0], node_pair[-1]]))
-        connections.append(connection)  # list of connection objects
-    streamed_connections = network.stream(connections, best='snr', transceiver='shannon')
-    snrs = []
-    [snrs.extend(connection.snr) for connection in streamed_connections]
-    rbl = []
-    for connection in streamed_connections:
-        for lightpath in connection.lightpaths:
-            rbl.append(lightpath.bitrate)
-    # Plot
-    plt.hist(snrs, bins=10)
-    plt.title('SNR Distribution[dB]')
+    NMC = 2 # number of monti carlo simulation
+    node_pairs_realizations = []
+    stream_conn_list = []
+    lines_state_list = []
+    for i in range(NMC):
+        print('Monte - Carlo Realization #{:d}'.format(i + 1))
+        network = Network('nodes.json', nch=10, upgrade_line='AC') # number of channels
+        # creates nodes and line objects
+        network.connect()  # connects the net by setting the line \ successive attribute with the node object at the end of the line
+        #network.draw()
+        # removed network draw
+        node_labels = list(network.nodes.keys())
+        T = create_traffic_matrix(node_labels,400, multiplier=5)
+        t = T.values
+        # print (T)
+        node_pairs = list(filter(lambda x: x[0] != x[1], list(it.product(node_labels, node_labels))))
+        shuffle(node_pairs)  # Create allocation request sequence realization
+        node_pairs_realizations.append(copy.deepcopy(node_pairs))
+        connections = []
+        for node_pair in node_pairs:
+            connection = Connection(node_pair[0], node_pair[-1], float(T.loc[node_pair[0], node_pair[-1]]))
+            connections.append(connection)
+        streamed_connections = network.stream(connections, best='snr', transceiver='shannon')
+        stream_conn_list.append(streamed_connections)
+        lines_state_list.append(network.lines)  # Get lines state
+    # Get MC stats
+    snr_conns = []
+    rbl_conns = []
+    rbc_conns = []
+    for streamed_conn in stream_conn_list:
+        snrs = []
+        rbl = []
+        [snrs.extend(connection.snr) for connection in streamed_conn]
+        for connection in streamed_conn:
+            for lightpath in connection.lightpaths:
+                rbl.append(lightpath.bitrate)
+        rbc = [connection.calculate_capacity() for connection in streamed_conn]
+        snr_conns.append(snrs)
+        rbl_conns.append(rbl)
+        rbc_conns.append(rbc)
+    # Congestion
+    lines_labels = list(lines_state_list[0].keys())
+    congestions = {label: [] for label in lines_labels}
+    for line_state in lines_state_list:
+        for line_label, line in line_state.items():
+            cong = line.state.count('occupied') / len(line.state)
+            congestions[line_label].append(cong)
+    avg_congestion = {label: [] for label in lines_labels}
+    for line_label, cong in congestions.items():
+        avg_congestion[line_label] = np.mean(cong)
+    plt.bar(range(len(avg_congestion)), list(avg_congestion.values()), align='center')
+    plt.title('Congestions')
+    plt.xticks(range(len(avg_congestion)), list(avg_congestion.keys()))
     plt.show()
-    rbc = [connection.calculate_capacity() for connection in streamed_connections]
-    plt.hist(rbc, bins=10)
-    plt.title('Connection Capacity Distribution[Gbps]')
-    plt.show()
-    plt.hist(rbl, bins=10)
-    plt.title('Lightpaths Capacity Distribution[Gbps]')
-    plt.show()
-    s = pd.Series(data=[0.0] * len(node_labels), index=node_labels)
-    df = pd.DataFrame(0.0, index=s.index, columns=s.index, dtype=s.dtype)
-    print(df)
-    for connection in streamed_connections:
-        df.loc[connection.input_node, connection.output_node] = connection.bitrate
-    print(df)
-    plot3Dbars(t)
-    plot3Dbars(df.values)
-    print('Avg SNR: {:.2f} dB', format(np.mean(list(filter(lambda x: x != 0, snrs)))))
-    print('Total Capacity Connections: {:.2f} Tbps ', format(np.sum(rbc) * 1e-3))
-    print('Total Capacity Lightpaths: {:.2f} Tbps', format(np.sum(rbl) * 1e-3))
-    print('AvgCapacity: {:.2 f} Gbps', format(np.mean(rbc)))
+
+    avg_snr_list = []
+    avg_rbl_list = []
+    traffic_list = []
+
+    [traffic_list.append(np.sum(rbl_list)) for rbl_list in rbl_conns]
+    [avg_rbl_list.append(np.mean(rbl_list)) for rbl_list in rbl_conns]
+    [avg_snr_list.append(np.mean(list(filter(lambda x: x != 0, snr_list)))) for snr_list in snr_conns]
+    print('\n')
+
+    print('Line  to upgrade: {}', format(max(avg_congestion, key=avg_congestion.get)))
+    print('Avg  Total Traffic: {:.2 f} Tbps', format(np.mean(traffic_list) * 1e-3))
+    print('Avg Lighpath Bitrate: {:.2f} Gbps ', format(np.mean(avg_rbl_list)))
+    print('Avg Lighpath SNR: {:.2f} dB', format(np.mean(avg_snr_list)))
+    for id_mcr in range(NMC):
+        plt.hist(snr_conns[id_mcr], bins=10)
+        plt.title('SNR Distribution [dB]')
+        plt.show()
+
+        # plt.hist(rbl_conns[id_mcr], bins=10)
+        # plt.title('Lightpath Capacity Distribution [Gbps]')
+        # plt.show()
 
 
 main()
+
+
