@@ -2,15 +2,16 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from scipy.constants import c
+from scipy.constants import c, Planck
 from random import shuffle
 
+
 class SignalInformation(object):
-    def __init__(self,power, path):
-        self._path=path
-        self._signal_power=power
-        self._latency=0
-        self._noise_power=0
+    def __init__(self, power, path):
+        self._path = path
+        self._signal_power = power
+        self._latency = 0
+        self._noise_power = 0
 
     @property
     def signal_power(self):
@@ -19,40 +20,54 @@ class SignalInformation(object):
     @property
     def path(self):
         return self._path
+
     @path.setter
-    def path(self,path):
-        self._path=path
+    def path(self, path):
+        self._path = path
 
     @property
     def noise_power(self):
         return self._noise_power
+
     @noise_power.setter
-    def noise_power(self,noise):
-        self._noise_power=noise
+    def noise_power(self, noise):
+        self._noise_power = noise
 
     @property
     def latency(self):
         return self._latency
+
     @latency.setter
-    def latency(self,latency):
-        self._latency=latency
+    def latency(self, latency):
+        self._latency = latency
 
-    def add_noise(self,noise):
-        self._noise_power+=noise
+    def add_noise(self, noise):
+        self._noise_power += noise
 
-    def add_latency(self,latency):
-        self._latency+=latency
+    def add_latency(self, latency):
+        self._latency += latency
 
     def next(self):
-        self._path=self._path[1:]
+        self._path = self._path[1:]
+
 
 class Lightpath(SignalInformation):
-    def __init__(self,power,path,channel):
+    def __init__(self, power, path, channel, Rs, df):
         self._path = path
         self._signal_power = power
-        self._channel=channel
+        self._channel = channel
+        self._Rs = Rs
+        self._df = df
         self._latency = 0
         self._noise_power = 0
+
+    @property
+    def Rs(self):
+        return self._Rs
+
+    @property
+    def df(self):
+        return self._df
 
     @property
     def signal_power(self):
@@ -95,12 +110,13 @@ class Lightpath(SignalInformation):
     def next(self):
         self._path = self._path[1:]
 
+
 class Node(object):
-    def __init__(self,node_dict):
-        self._label=node_dict['label']
-        self._position=node_dict['position']
-        self._connected_nodes=node_dict['connected_nodes']
-        self._successive={}
+    def __init__(self, node_dict):
+        self._label = node_dict['label']
+        self._position = node_dict['position']
+        self._connected_nodes = node_dict['connected_nodes']
+        self._successive = {}
 
     @property
     def label(self):
@@ -118,21 +134,43 @@ class Node(object):
     def successive(self):
         return self._successive
 
-    def propagate(self,lightpath,occupation=False):
-        path=lightpath.path
-        if len(path)>1:
-            line_label=path[:2]
-            line=self.successive[line_label]
+    def propagate(self, lightpath, occupation=False):
+        path = lightpath.path
+        if len(path) > 1:
+            line_label = path[:2]
+            line = self.successive[line_label]
             lightpath.next()
-            lightpath=line.propagate(lightpath,occupation)
+            lightpath = line.propagate(lightpath, occupation)
         return lightpath
 
+
 class Line(object):
-    def __init__(self,line_dict):
-        self._label=line_dict['label']
-        self._length=line_dict['length']
-        self._state=['free']*10
-        self.successive={}
+    def __init__(self, line_dict):
+        self._label = line_dict['label']
+        self._length = line_dict['length']
+        self._amplifiers = int(np.ceil(self._length/80))
+        self._span_length = self._length / self._amplifiers
+        self._gain = 20
+        self._noise_figure = 5
+        self._state = ['free'] * 10
+        self.successive = {}
+
+        # parameters
+        self._alpha = 4.6e-5
+        self._beta = 6.38e-27
+        self._gamma = 1.27e-3
+
+    @property
+    def alpha(self):
+        return self._alpha
+
+    @property
+    def beta(self):
+        return self._beta
+
+    @property
+    def gamma(self):
+        return self._gamma
 
     @property
     def label(self):
@@ -145,57 +183,99 @@ class Line(object):
     @property
     def state(self):
         return self._state
+
     @state.setter
-    def state(self,state):
-        state=[s.lower().strip() for s in state]
-        if set(state).issubset(set(['free','occupied'])):
-            self._state=state
+    def state(self, state):
+        state = [s.lower().strip() for s in state]
+        if set(state).issubset(set(['free', 'occupied'])):
+            self._state = state
         else:
-            print("Error: line state not recognized. Value: ",set(state)-set(['free','occupied']))
-
-
+            print("Error: line state not recognized. Value: ", set(state) - set(['free', 'occupied']))
 
     @property
     def successive(self):
         return self._successive
 
     @successive.setter
-    def successive(self,successive):
-        self._successive=successive
+    def successive(self, successive):
+        self._successive = successive
+
+    @property
+    def amplifiers(self):
+        return self._amplifiers
+
+    @property
+    def span_length(self):
+        return self._span_length
+
+    @property
+    def gain(self):
+        return self._gain
+
+    @gain.setter
+    def gain(self, gain):
+        self._gain = gain
+
+    @property
+    def noise_figure(self):
+        return self._noise_figure
 
     def latency_generation(self):
-        return self._length/(c*2/3)
+        return self._length / (c * 2 / 3)
 
-    def noise_generation(self,signal_power):
-        return signal_power/(2*self._length)
+    def noise_generation(self, signal_power):
+        return signal_power / (2 * self._length)
 
-    def propagate(self,lightpath,occupation=False):
-        #Update Latency
-        latency=self.latency_generation()
+    def propagate(self, lightpath, occupation=False):
+        # Update Latency
+        latency = self.latency_generation()
         lightpath.add_latency(latency)
-        #Update Noise
-        signal_power=lightpath._signal_power
-        noise=self.noise_generation(signal_power)
+        # Update Noise
+        signal_power = lightpath._signal_power
+        noise = self.noise_generation(signal_power)
         lightpath.add_noise(noise)
-        #Update Line State
+        # Update Line State
         if occupation:
-            channel=lightpath._channel
-            new_state=self._state.copy()
-            new_state[channel]='occupied'
-            self._state=new_state
+            channel = lightpath._channel
+            new_state = self._state.copy()
+            new_state[channel] = 'occupied'
+            self._state = new_state
 
-        node=self.successive[lightpath.path[0]]
-        lightpath=node.propagate(lightpath,occupation)
+        node = self.successive[lightpath.path[0]]
+        lightpath = node.propagate(lightpath, occupation)
         return lightpath
+
+    # lab6 ftn()
+    def ase_generation(self):
+        gain_lin = 10 ** (self._gain/10)
+        noise_figure_lin = 10 ** (self._noise_figure/10)
+        N = self._amplifiers
+        f = 193.4e12
+        h = Planck
+        Bn = 12.5e9
+        ase_noise = N * h * f * Bn * noise_figure_lin * (gain_lin - 1)
+        return ase_noise
+
+    def nli_generation(self, signal_power, Rs, df):
+        Nch = 10
+        Pch = signal_power
+        loss = np.exp(-self._alpha * self._span_length)
+        N_spans = self._amplifiers
+        eta = 16 / (27 * pi) * \
+            np.log(pi ** 2 * self._beta * Rs ** 2 * \
+            Nch ** (2 * Rs/df) / (2 * self._alpha)) * \
+            self._gamma ** 2 / (4 * self._alpha * self._beta * Rs ** 3)
+        nli_noise = N_spans * (Pch ** 3 * loss * eta)
+        return nli_noise
 
 class Connection(object):
 
-    def __init__(self,input_node,output_node,signal_power):
-        self._input_node=input_node
-        self._output_node=output_node
-        self._signal_power=signal_power
-        self._latency=0
-        self._snr=0
+    def __init__(self, input_node, output_node, signal_power):
+        self._input_node = input_node
+        self._output_node = output_node
+        self._signal_power = signal_power
+        self._latency = 0
+        self._snr = 0
 
     @property
     def input_node(self):
@@ -217,44 +297,43 @@ class Connection(object):
     def snr(self):
         return self._snr
 
-    def latency_seter(self,latency):
-        self._latency=latency
+    def latency_seter(self, latency):
+        self._latency = latency
 
-    def snr_setter(self,snr):
-        self._snr=snr
+    def snr_setter(self, snr):
+        self._snr = snr
+
 
 class Network(object):
 
-    def __init__(self,json_path):
-        node_json=json.load(open(json_path,'r'))
-        self._nodes={}
-        self._lines={}
+    def __init__(self, json_path):
+        node_json = json.load(open(json_path, 'r'))
+        self._nodes = {}
+        self._lines = {}
 
-        self._connected=False
-        self._weighted_paths=None
+        self._connected = False
+        self._weighted_paths = None
 
-        self._route_space=None
-
+        self._route_space = None
 
         # Creating Node Instance
         for node_label in node_json:
-            node_dict=node_json[node_label]
-            node_dict['label']=node_label
-            node=Node(node_dict)
-            self._nodes[node_label]=node
+            node_dict = node_json[node_label]
+            node_dict['label'] = node_label
+            node = Node(node_dict)
+            self._nodes[node_label] = node
 
-        # Creating Line Instance
+            # Creating Line Instance
             for connected_node_label in node_dict['connected_nodes']:
-                line_dict={}
-                line_label=node_label+connected_node_label
-                line_dict['label']=line_label
-                node_position=np.array(node_json[node_label]['position'])
+                line_dict = {}
+                line_label = node_label + connected_node_label
+                line_dict['label'] = line_label
+                node_position = np.array(node_json[node_label]['position'])
                 connected_node_position = np.array(node_json[connected_node_label]['position'])
-                length=np.sqrt(np.sum(np.square(node_position-connected_node_position)))
-                line_dict['length']=length
-                line=Line(line_dict)
-                self._lines[line_label]=line
-
+                length = np.sqrt(np.sum(np.square(node_position - connected_node_position)))
+                line_dict['length'] = length
+                line = Line(line_dict)
+                self._lines[line_label] = line
 
     @property
     def nodes(self):
@@ -272,7 +351,7 @@ class Network(object):
     def weighted_paths(self):
         return self._weighted_paths
 
-    def set_weighted_paths(self,signal_power):
+    def set_weighted_paths(self, signal_power):
         if not self._connected:
             self.connect()
         node_labels = network.nodes.keys()
@@ -297,7 +376,7 @@ class Network(object):
 
                 # propagation
                 signal_information = SignalInformation(signal_power, path)
-                signal_information = self.propagate(signal_information,occupation=False)
+                signal_information = self.propagate(signal_information, occupation=False)
                 latencies.append(signal_information.latency)
                 noises.append(signal_information.noise_power)
                 snrs.append(10 * np.log10(signal_information.signal_power / signal_information.noise_power))
@@ -306,133 +385,132 @@ class Network(object):
         df['latency'] = latencies
         df['noise'] = noises
         df['snr'] = snrs
-        self._weighted_paths=df
-        route_space=pd.DataFrame()
-        route_space['path']=paths
+        self._weighted_paths = df
+        route_space = pd.DataFrame()
+        route_space['path'] = paths
         for i in range(10):
-            route_space[str(i)]=['free']*len(paths)
-        self._route_space=route_space
+            route_space[str(i)] = ['free'] * len(paths)
+        self._route_space = route_space
 
-    def find_paths(self,label1,label2):
-        cross_nodes=[key for key in self.nodes.keys()
-                            if((key!=label2)&(key!=label1))]
-        cross_lines=self.lines.keys()
-        inner_paths={}
-        inner_paths['0']=label1
-        for i in range(len(cross_nodes)+1):
-            inner_paths[str(i+1)]=[]
+    def find_paths(self, label1, label2):
+        cross_nodes = [key for key in self.nodes.keys()
+                       if ((key != label2) & (key != label1))]
+        cross_lines = self.lines.keys()
+        inner_paths = {}
+        inner_paths['0'] = label1
+        for i in range(len(cross_nodes) + 1):
+            inner_paths[str(i + 1)] = []
             for inner_path in inner_paths[str(i)]:
-                inner_paths[str(i+1)] += [inner_path+cross_node
-                                         for cross_node in cross_nodes
-                                         if((cross_node not in inner_path) & (inner_path[-1]+cross_node in cross_lines))]
+                inner_paths[str(i + 1)] += [inner_path + cross_node
+                                            for cross_node in cross_nodes
+                                            if ((cross_node not in inner_path) & (
+                                inner_path[-1] + cross_node in cross_lines))]
 
-        paths=[]
-        for i in range(len(cross_nodes)+1):
+        paths = []
+        for i in range(len(cross_nodes) + 1):
             for path in inner_paths[str(i)]:
-                if path[-1]+label2 in cross_lines:
-                    paths.append(path+label2)
+                if path[-1] + label2 in cross_lines:
+                    paths.append(path + label2)
         return paths
 
-
     def connect(self):
-        self._connected=True
-        nodes_dict=self.nodes
-        lines_dict=self.lines
+        self._connected = True
+        nodes_dict = self.nodes
+        lines_dict = self.lines
         for node_label in nodes_dict:
             node = nodes_dict[node_label]
             for connected_node_label in node.connected_nodes:
-                line_label=node_label+connected_node_label
-                line=lines_dict[line_label]
-                line.successive[connected_node_label]=nodes_dict[connected_node_label]
-                node.successive[line_label]=lines_dict[line_label]
+                line_label = node_label + connected_node_label
+                line = lines_dict[line_label]
+                line.successive[connected_node_label] = nodes_dict[connected_node_label]
+                node.successive[line_label] = lines_dict[line_label]
 
-    def propagate(self,lightpath,occupation=False):
-        path=lightpath.path
-        start_node=self.nodes[path[0]]
-        propagated_lightpath=start_node.propagate(lightpath,occupation)
+    def propagate(self, lightpath, occupation=False):
+        path = lightpath.path
+        start_node = self.nodes[path[0]]
+        propagated_lightpath = start_node.propagate(lightpath, occupation)
         return propagated_lightpath
 
-
-    def stream(self,connections,best='latency'):
-        streamed_connections=[]
+    def stream(self, connections, best='latency'):
+        streamed_connections = []
         for connection in connections:
-            input_node=connection.input_node
-            output_node=connection.output_node
-            signal_power=connection.signal_power
+            input_node = connection.input_node
+            output_node = connection.output_node
+            signal_power = connection.signal_power
             self.set_weighted_paths(1)
             if best == 'latency':
-                path=self.find_best_latency(input_node,output_node)
+                path = self.find_best_latency(input_node, output_node)
             elif best == 'snr':
-                path=self.find_best_snr(input_node,output_node)
+                path = self.find_best_snr(input_node, output_node)
             else:
-                print('Error: best input not recognized. Value: ',best)
+                print('Error: best input not recognized. Value: ', best)
                 continue
             if path:
-                path_occpacy=self._route_space.loc[self._route_space.path==path].T.values[1:]
-               # print(self._route_space)
+                path_occpacy = self._route_space.loc[self._route_space.path == path].T.values[1:]
+                # print(self._route_space)
 
-                channel=[i for i in range(len(path_occpacy))
-                         if path_occpacy[i]=='free'][0]
-                path=path.replace('->','')
-                in_lightpath=Lightpath(signal_power,path,channel)
-                out_lightpath=self.propagate(in_lightpath,True)
-                connection._latency=out_lightpath.latency
-                noise_power=out_lightpath.noise_power
-                connection._snr=10*np.log10(signal_power/noise_power)
-                self.update_route_space(path,channel)
+                channel = [i for i in range(len(path_occpacy))
+                           if path_occpacy[i] == 'free'][0]
+                path = path.replace('->', '')
+                in_lightpath = Lightpath(signal_power, path, channel, 0, 0)
+                out_lightpath = self.propagate(in_lightpath, True)
+                connection._latency = out_lightpath.latency
+                noise_power = out_lightpath.noise_power
+                connection._snr = 10 * np.log10(signal_power / noise_power)
+                self.update_route_space(path, channel)
             else:
-                connection._latency=None
-                connection._snr=0
+                connection._latency = None
+                connection._snr = 0
             streamed_connections.append(connection)
         return streamed_connections
 
     @staticmethod
     def path_to_line_set(path):
-        path=path.replace('->','')
-        return set([path[i]+path[i+1] for i in range(len(path)-1)])
+        path = path.replace('->', '')
+        return set([path[i] + path[i + 1] for i in range(len(path) - 1)])
 
-    def available_paths(self,input_node,output_node):
+    def available_paths(self, input_node, output_node):
         if self._weighted_paths is None:
             self.set_weighted_paths(1)
-        all_paths=[path for path in self._weighted_paths.path.values
-                   if((path[0]==input_node)&(path[-1]==output_node))]
-        available_paths=[]
+        all_paths = [path for path in self._weighted_paths.path.values
+                     if ((path[0] == input_node) & (path[-1] == output_node))]
+        available_paths = []
         for path in all_paths:
-            path_occupacy=self._route_space.loc[self._route_space.path==path].T.values[1:]
+            path_occupacy = self._route_space.loc[self._route_space.path == path].T.values[1:]
             if 'free' in path_occupacy:
                 available_paths.append(path)
         return available_paths
-    
-    def find_best_snr(self,input_node,output_node):
+
+    def find_best_snr(self, input_node, output_node):
         available_paths = self.available_paths(input_node, output_node)
         if available_paths:
-            inout_df=self.weighted_paths.loc[self._weighted_paths.path.isin(available_paths)]
-            best_snr=np.max(inout_df.snr.values)
-            best_path=inout_df.loc[inout_df.snr==best_snr].path.values[0]
+            inout_df = self.weighted_paths.loc[self._weighted_paths.path.isin(available_paths)]
+            best_snr = np.max(inout_df.snr.values)
+            best_path = inout_df.loc[inout_df.snr == best_snr].path.values[0]
         else:
-            best_path=None
+            best_path = None
         return best_path
 
-    def find_best_latency(self,input_node,output_node):
+    def find_best_latency(self, input_node, output_node):
         available_paths = self.available_paths(input_node, output_node)
         if available_paths:
-            inout_df=self.weighted_paths.loc[self._weighted_paths.path.isin(available_paths)]
-            best_latency=np.min(inout_df.latency.values)
-            best_path=inout_df.loc[inout_df.latency==best_latency].path.values[0]
+            inout_df = self.weighted_paths.loc[self._weighted_paths.path.isin(available_paths)]
+            best_latency = np.min(inout_df.latency.values)
+            best_path = inout_df.loc[inout_df.latency == best_latency].path.values[0]
         else:
-            best_path=None
+            best_path = None
         return best_path
 
-    def update_route_space(self,path,channel):
-        all_paths=[self.path_to_line_set(p)
-                   for p in self._route_space.path.values]
-        states=self._route_space[str(channel)]
-        lines=self.path_to_line_set(path)
+    def update_route_space(self, path, channel):
+        all_paths = [self.path_to_line_set(p)
+                     for p in self._route_space.path.values]
+        states = self._route_space[str(channel)]
+        lines = self.path_to_line_set(path)
         for i in range(len(all_paths)):
-            line_set=all_paths[i]
+            line_set = all_paths[i]
             if lines.intersection(line_set):
-                states[i]='occupied'
-        self._route_space[str(channel)]=states
+                states[i] = 'occupied'
+        self._route_space[str(channel)] = states
 
     def draw(self):
         nodes = self.nodes
@@ -454,16 +532,15 @@ class Network(object):
 
 network = Network('nodes.json')
 network.connect()
-node_labels=list(network.nodes.keys())
-connections=[]
+node_labels = list(network.nodes.keys())
+connections = []
 for i in range(1000):
     shuffle(node_labels)
-    connection=Connection(node_labels[0],node_labels[-1],1)
+    connection = Connection(node_labels[0], node_labels[-1], 1)
     connections.append(connection)
 
-
-streamed_connections = network.stream(connections,best='snr')
-snrs=[connection.snr for connection in streamed_connections]
-plt.hist(snrs,bins=10)
+streamed_connections = network.stream(connections, best='snr')
+snrs = [connection.snr for connection in streamed_connections]
+plt.hist(snrs, bins=10)
 plt.title('SNR Distribution')
 plt.show()
