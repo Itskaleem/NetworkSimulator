@@ -1,73 +1,22 @@
 import json
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
-from scipy.constants import c, Planck
+from builtins import list
 from random import shuffle
 
-
-class SignalInformation(object):
-    def __init__(self, power, path):
-        self._path = path
-        self._signal_power = power
-        self._latency = 0
-        self._noise_power = 0
-
-    @property
-    def signal_power(self):
-        return self._signal_power
-
-    @property
-    def path(self):
-        return self._path
-
-    @path.setter
-    def path(self, path):
-        self._path = path
-
-    @property
-    def noise_power(self):
-        return self._noise_power
-
-    @noise_power.setter
-    def noise_power(self, noise):
-        self._noise_power = noise
-
-    @property
-    def latency(self):
-        return self._latency
-
-    @latency.setter
-    def latency(self, latency):
-        self._latency = latency
-
-    def add_noise(self, noise):
-        self._noise_power += noise
-
-    def add_latency(self, latency):
-        self._latency += latency
-
-    def next(self):
-        self._path = self._path[1:]
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy.constants import Planck, c, pi
 
 
-class Lightpath(SignalInformation):
-    def __init__(self, power, path, channel, Rs, df):
+class Lightpath(object):
+    def __init__(self, path, power=None, channel=0,rs=32e9,df=50e9):
         self._path = path
         self._signal_power = power
         self._channel = channel
-        self._Rs = Rs
-        self._df = df
+        self._rs=rs
+        self._df=df
         self._latency = 0
         self._noise_power = 0
-
-    @property
-    def Rs(self):
-        return self._Rs
-
-    @property
-    def df(self):
-        return self._df
 
     @property
     def signal_power(self):
@@ -81,6 +30,14 @@ class Lightpath(SignalInformation):
     def channel(self):
         return self._channel
 
+    @property
+    def rs(self):
+        return self._rs
+
+    @property
+    def df(self):
+        return self._df
+
     @path.setter
     def path(self, path):
         self._path = path
@@ -100,6 +57,7 @@ class Lightpath(SignalInformation):
     @latency.setter
     def latency(self, latency):
         self._latency = latency
+
 
     def add_noise(self, noise):
         self._noise_power += noise
@@ -147,18 +105,47 @@ class Node(object):
 class Line(object):
     def __init__(self, line_dict):
         self._label = line_dict['label']
-        self._length = line_dict['length']
-        self._amplifiers = int(np.ceil(self._length/80))
-        self._span_length = self._length / self._amplifiers
-        self._gain = 20
-        self._noise_figure = 5
+        self._length = line_dict['length']*1e3
+        self._amplifiers=int(np.ceil(self._length/80e3))
+        self._span_length = self._length/self._amplifiers
+        self._noise_figure=5
         self._state = ['free'] * 10
         self.successive = {}
 
-        # parameters
-        self._alpha = 4.6e-5
-        self._beta = 6.38e-27
-        self._gamma = 1.27e-3
+        # Physical parameters of the fiber
+        self._alpha=4.6e-5
+        self._beta=21.27e-27
+        self._gama=1.27e-3
+
+        #Set Gain to transparency
+        self._gain=self.transparency()
+
+    @property
+    def label(self):
+        return self._label
+
+    @property
+    def length(self):
+        return self._length
+
+    @property
+    def gain(self):
+        return self._gain
+    @gain.setter
+    def gain(self,gain):
+        self._gain=gain
+
+    @property
+    def noise_figure(self):
+        return self._noise_figure
+
+    @property
+    def span_lenght(self):
+        return self._span_length
+
+    @property
+    def amplifiers(self):
+        return self._amplifier
 
     @property
     def alpha(self):
@@ -169,16 +156,8 @@ class Line(object):
         return self._beta
 
     @property
-    def gamma(self):
-        return self._gamma
-
-    @property
-    def label(self):
-        return self._label
-
-    @property
-    def length(self):
-        return self._length
+    def gama(self):
+        return self._gama
 
     @property
     def state(self):
@@ -200,31 +179,44 @@ class Line(object):
     def successive(self, successive):
         self._successive = successive
 
-    @property
-    def amplifiers(self):
-        return self._amplifiers
-
-    @property
-    def span_length(self):
-        return self._span_length
-
-    @property
-    def gain(self):
-        return self._gain
-
-    @gain.setter
-    def gain(self, gain):
-        self._gain = gain
-
-    @property
-    def noise_figure(self):
-        return self._noise_figure
-
     def latency_generation(self):
         return self._length / (c * 2 / 3)
 
-    def noise_generation(self, signal_power):
-        return signal_power / (2 * self._length)
+    def noise_generation(self, lightpath):
+        # print(type(lightpath))
+        noise = self.ase_generation()+self.nli_generation(lightpath.signal_power,lightpath.rs,lightpath.df)
+        return noise
+
+    def ase_generation(self):
+        gain_lin=10**(self._gain/10)
+        noise_figure_lin=10**(self._noise_figure/10)
+        N=self._amplifiers
+        f=193.4e12
+        Bn=12.5e9
+        h=Planck
+        ase_noise=N*h*f*Bn*noise_figure_lin*(gain_lin-1)
+        return ase_noise
+
+    def nli_generation(self,signal_power,rs,df):
+        Nch=10
+        Pch=signal_power
+        Bn=12.5e9
+        loss=np.exp(-self._alpha*self._span_length)
+        gain_lin=10**(self._gain/10)
+        N_spans=self._amplifiers
+        eta=16/(27*pi)*\
+            np.log(pi**2*self._beta*rs**2*\
+            Nch**(2*rs/df)/(2*self._alpha))*\
+            self._gama**2/(4*self._alpha*self._beta*rs**3)
+        nli_noise = N_spans*(Pch**3*loss*gain_lin*eta*Bn)
+        return nli_noise
+
+    def transparency(self):
+        gain = 10*np.log10(np.exp(self._alpha*self._span_length))
+        return gain
+
+
+
 
     def propagate(self, lightpath, occupation=False):
         # Update Latency
@@ -232,7 +224,7 @@ class Line(object):
         lightpath.add_latency(latency)
         # Update Noise
         signal_power = lightpath._signal_power
-        noise = self.noise_generation(signal_power)
+        noise = self.noise_generation(lightpath)
         lightpath.add_noise(noise)
         # Update Line State
         if occupation:
@@ -245,28 +237,7 @@ class Line(object):
         lightpath = node.propagate(lightpath, occupation)
         return lightpath
 
-    # lab6 ftn()
-    def ase_generation(self):
-        gain_lin = 10 ** (self._gain/10)
-        noise_figure_lin = 10 ** (self._noise_figure/10)
-        N = self._amplifiers
-        f = 193.4e12
-        h = Planck
-        Bn = 12.5e9
-        ase_noise = N * h * f * Bn * noise_figure_lin * (gain_lin - 1)
-        return ase_noise
 
-    def nli_generation(self, signal_power, Rs, df):
-        Nch = 10
-        Pch = signal_power
-        loss = np.exp(-self._alpha * self._span_length)
-        N_spans = self._amplifiers
-        eta = 16 / (27 * pi) * \
-            np.log(pi ** 2 * self._beta * Rs ** 2 * \
-            Nch ** (2 * Rs/df) / (2 * self._alpha)) * \
-            self._gamma ** 2 / (4 * self._alpha * self._beta * Rs ** 3)
-        nli_noise = N_spans * (Pch ** 3 * loss * eta)
-        return nli_noise
 
 class Connection(object):
 
@@ -375,11 +346,13 @@ class Network(object):
                 paths.append(path_string[:-2])
 
                 # propagation
-                signal_information = SignalInformation(signal_power, path)
-                signal_information = self.propagate(signal_information, occupation=False)
-                latencies.append(signal_information.latency)
-                noises.append(signal_information.noise_power)
-                snrs.append(10 * np.log10(signal_information.signal_power / signal_information.noise_power))
+                ligthpath = Lightpath(path)
+                ligthpath = self.optimization(ligthpath)
+                ligthpath = self.propagate(ligthpath, occupation=False)
+
+                latencies.append(ligthpath.latency)
+                noises.append(ligthpath.noise_power)
+                snrs.append(10*np.log10(ligthpath.signal_power/ligthpath.noise_power))
 
         df['path'] = paths
         df['latency'] = latencies
@@ -449,14 +422,16 @@ class Network(object):
                 path_occpacy = self._route_space.loc[self._route_space.path == path].T.values[1:]
                 # print(self._route_space)
 
-                channel = [i for i in range(len(path_occpacy))
+                channel = [i for i in range(len(path_occpacy))   # Uses First Free Channel
                            if path_occpacy[i] == 'free'][0]
                 path = path.replace('->', '')
-                in_lightpath = Lightpath(signal_power, path, channel, 0, 0)
+                in_lightpath = Lightpath(path, channel)
+                self.optimization(in_lightpath)
                 out_lightpath = self.propagate(in_lightpath, True)
+                connection._signal_power=out_lightpath.signal_power
                 connection._latency = out_lightpath.latency
                 noise_power = out_lightpath.noise_power
-                connection._snr = 10 * np.log10(signal_power / noise_power)
+                connection._snr = 10 * np.log10(out_lightpath.signal_power / noise_power)
                 self.update_route_space(path, channel)
             else:
                 connection._latency = None
@@ -511,6 +486,19 @@ class Network(object):
             if lines.intersection(line_set):
                 states[i] = 'occupied'
         self._route_space[str(channel)] = states
+
+
+    def optimization(self,lightpath):
+        # set the ligthpath power to the optimal
+        # power calculated on the first line of the path
+        first_line=lightpath.path[0:2]
+        line = self._lines[first_line]
+
+        ase = line.ase_generation()
+        eta = line.nli_generation(1,lightpath.rs,lightpath.df)
+        lightpath._signal_power = (ase/(2*eta))**(1/3)  # calculate optimum power
+        return lightpath
+
 
     def draw(self):
         nodes = self.nodes
