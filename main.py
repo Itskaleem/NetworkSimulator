@@ -1,6 +1,4 @@
-from scipy.constants import Planck
-from scipy.constants import pi
-from scipy.constants import c
+from scipy.constants import Planck, pi, c
 from scipy.special import erfcinv
 import numpy as np
 import pandas as pd
@@ -9,6 +7,7 @@ from random import shuffle
 import matplotlib.pyplot as plt
 import itertools as it
 import copy
+
 
 class Lightpath(object):
     def __init__(self, path: str, channel=0, rs=32e9, df=50e9, transceiver ='shannon'):
@@ -179,7 +178,7 @@ class Line(object):
         self._noise_figure = 7
         # Physical Parameters of the Fiber
         self._alpha = 4.6e-5
-        self._beta = 21.27e-27
+        self._beta = 6.27e-27
         self._gamma = 1.27e-3
         self._Nch = line_dict['Nch']
         self._state = ['free'] * self._Nch
@@ -669,7 +668,7 @@ class Connection(object):
         self._lightpaths = []
 
 
-def create_traffic_matrix(nodes, rate, multiplier=1):
+def create_traffic_matrix(nodes, rate, multiplier=5):
     s = pd.Series(data=[0.0] * len(nodes), index=nodes)
     df = pd.DataFrame(float(rate * multiplier), index=s.index, columns=s.index, dtype=s.dtype)
     np.fill_diagonal(df.values, s)
@@ -694,13 +693,13 @@ def main():
     lines_state_list = []
     for i in range(NMC):
         print('Monte - Carlo Realization #{:d}'.format(i + 1))
-        network = Network('nodes.json', nch=10, upgrade_line='AC') # number of channels
+        network = Network('nodes_9.json', nch=10, upgrade_line='DB') # number of channels
         # creates nodes and line objects
         network.connect()  # connects the net by setting the line \ successive attribute with the node object at the end of the line
         #network.draw()
-        # removed network draw
+
         node_labels = list(network.nodes.keys())
-        T = create_traffic_matrix(node_labels,400, multiplier=5)
+        T = create_traffic_matrix(node_labels,600, multiplier=5)
         t = T.values
         # print (T)
         node_pairs = list(filter(lambda x: x[0] != x[1], list(it.product(node_labels, node_labels))))
@@ -739,19 +738,16 @@ def main():
     for line_label, cong in congestions.items():
         avg_congestion[line_label] = np.mean(cong)
     plt.bar(range(len(avg_congestion)), list(avg_congestion.values()), align='center')
-    plt.title('Congestions')
     plt.xticks(range(len(avg_congestion)), list(avg_congestion.keys()))
     plt.show()
-
     avg_snr_list = []
     avg_rbl_list = []
     traffic_list = []
-
     [traffic_list.append(np.sum(rbl_list)) for rbl_list in rbl_conns]
     [avg_rbl_list.append(np.mean(rbl_list)) for rbl_list in rbl_conns]
     [avg_snr_list.append(np.mean(list(filter(lambda x: x != 0, snr_list)))) for snr_list in snr_conns]
-    print('\n')
 
+    print('\n')
     print('Line  to upgrade: {}', format(max(avg_congestion, key=avg_congestion.get)))
     print('Avg  Total Traffic: {:.2 f} Tbps', format(np.mean(traffic_list) * 1e-3))
     print('Avg Lighpath Bitrate: {:.2f} Gbps ', format(np.mean(avg_rbl_list)))
@@ -759,7 +755,7 @@ def main():
     for id_mcr in range(NMC):
         plt.hist(snr_conns[id_mcr], bins=10)
         plt.title('SNR Distribution [dB]')
-        plt.show()
+        #plt.show()
 
         # plt.hist(rbl_conns[id_mcr], bins=10)
         # plt.title('Lightpath Capacity Distribution [Gbps]')
@@ -767,5 +763,3 @@ def main():
 
 
 main()
-
-
